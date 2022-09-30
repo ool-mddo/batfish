@@ -2749,6 +2749,16 @@ public class CiscoXrControlPlaneExtractor extends CiscoXrParserBaseListener
   }
 
   @Override
+  public void exitRoc_hello_interval(CiscoXrParser.Roc_hello_intervalContext ctx) {
+    _currentOspfSettings.setHelloInterval(toInteger(ctx.interval));
+  }
+
+  @Override
+  public void exitRoc_dead_interval(CiscoXrParser.Roc_dead_intervalContext ctx) {
+    _currentOspfSettings.setDeadInterval(toInteger(ctx.interval));
+  }
+
+  @Override
   public void exitRo_max_metric(Ro_max_metricContext ctx) {
     if (ctx.on_startup != null || !ctx.WAIT_FOR_BGP().isEmpty()) {
       return;

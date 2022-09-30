@@ -76,6 +76,8 @@ ro_common
 :
    roc_authentication
    | roc_cost
+   | roc_hello_interval
+   | roc_dead_interval
    | roc_distribute_list_in
    | roc_network
    | roc_passive
@@ -188,9 +190,7 @@ roc_null
       AUTO_COST
       | BFD
       | CAPABILITY
-      | DEAD_INTERVAL
       | FAST_REROUTE
-      | HELLO_INTERVAL
       | LOG
       | MAX_LSA
       | MAXIMUM REDISTRIBUTED_PREFIXES
@@ -280,6 +280,16 @@ ro_vrf
 roc_cost
 :
    COST cost = uint_legacy NEWLINE
+;
+
+roc_hello_interval
+:
+   HELLO_INTERVAL interval = uint_legacy NEWLINE
+;
+
+roc_dead_interval
+:
+   DEAD_INTERVAL interval = uint_legacy NEWLINE
 ;
 
 roa_interface

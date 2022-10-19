@@ -43,6 +43,7 @@ ntp_common
    | ntp_clock_period
    | ntp_commit
    | ntp_distribute
+   | ntp_interface
    | ntp_logging
    | ntp_max_associations
    | ntp_master
@@ -58,6 +59,14 @@ ntp_common
 ntp_distribute
 :
    DISTRIBUTE NEWLINE
+;
+
+ntp_if_inner: DISABLE NEWLINE;
+
+ntp_interface
+:
+   INTERFACE iname = interface_name NEWLINE
+   ntp_if_inner*
 ;
 
 ntp_logging
@@ -80,7 +89,6 @@ ntp_null
    (
       ALLOW
       | AUTHENTICATION_KEY
-      | INTERFACE
       | LOG_INTERNAL_SYNC
       | PASSIVE
    ) null_rest_of_line

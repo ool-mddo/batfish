@@ -3671,6 +3671,8 @@ F_InterfaceName
   | 'irb'
   | 'vlan'
   | 'vme'
+  | 'lo'
+  | 'eth' F_Digit+
 ;
 
 fragment

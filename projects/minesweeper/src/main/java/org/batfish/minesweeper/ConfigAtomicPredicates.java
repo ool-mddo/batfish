@@ -1,5 +1,8 @@
 package org.batfish.minesweeper;
 
+import static org.apache.commons.lang3.ObjectUtils.firstNonNull;
+
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import java.util.Collection;
 import java.util.Collections;
@@ -9,24 +12,33 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import org.batfish.common.NetworkSnapshot;
 import org.batfish.common.plugin.IBatfish;
 import org.batfish.datamodel.Configuration;
 import org.batfish.datamodel.bgp.community.StandardCommunity;
 import org.batfish.datamodel.routing_policy.RoutingPolicy;
+import org.batfish.datamodel.routing_policy.expr.BooleanExprVisitor;
 import org.batfish.datamodel.routing_policy.statement.Statement;
-import org.batfish.minesweeper.aspath.RoutePolicyStatementAsPathCollector;
+import org.batfish.minesweeper.aspath.BooleanExprAsPathCollector;
+import org.batfish.minesweeper.aspath.RoutePolicyStatementMatchCollector;
 import org.batfish.minesweeper.communities.RoutePolicyStatementVarCollector;
+import org.batfish.minesweeper.env.BooleanExprSourceVrfCollector;
+import org.batfish.minesweeper.env.BooleanExprTrackCollector;
 import org.batfish.minesweeper.utils.Tuple;
 
 /**
- * This class computes the community-regex and AS-path-regex atomic predicates for a single router
- * configuration.
+ * This class traverses a given router configuration to find the community literals/regexes, as-path
+ * regexes, tracks (see {@link org.batfish.datamodel.routing_policy.expr.TrackSucceeded}), and
+ * source VRFs (see {@link org.batfish.datamodel.routing_policy.expr.MatchSourceVrf}) that it
+ * contains. It uses this information to compute atomic predicates for each, which are then
+ * represented by unique BDD variables in a {@link org.batfish.minesweeper.bdd.BDDRoute} in order to
+ * perform the symbolic route analysis. (We don't need to compute atomic predicates for the tracks
+ * and source VRFs, because they are all independent of one another, so each gets a corresponding
+ * BDD variable.)
  */
-public class ConfigAtomicPredicates {
-
-  private final Configuration _configuration;
+public final class ConfigAtomicPredicates {
 
   /**
    * Atomic predicates for standard community literals and regexes that appear in the given
@@ -42,6 +54,15 @@ public class ConfigAtomicPredicates {
 
   /** Atomic predicates for the AS-path regexes that appear in the given configuration. */
   private final AsPathRegexAtomicPredicates _asPathRegexAtomicPredicates;
+
+  /** The list of next-hop interface names that appear in the given configuration. */
+  private final ImmutableList<String> _nextHopInterfaces;
+
+  /** The list of "tracks" that appear in the given configuration. */
+  private final ImmutableList<String> _tracks;
+
+  /** The list of source VRFs that appear in the given configuration. */
+  private final ImmutableList<String> _sourceVrfs;
 
   /**
    * Compute atomic predicates for the given router's configuration.
@@ -89,11 +110,55 @@ public class ConfigAtomicPredicates {
       @Nullable Set<CommunityVar> communities,
       @Nullable Set<String> asPathRegexes,
       @Nullable Collection<RoutingPolicy> policies) {
-    _configuration = batfish.loadConfigurations(snapshot).get(router);
-    Collection<RoutingPolicy> usedPolicies =
-        policies == null ? _configuration.getRoutingPolicies().values() : policies;
+    this(
+        batfish,
+        snapshot,
+        null,
+        router,
+        communities,
+        asPathRegexes,
+        policies == null
+            ? batfish.loadConfigurations(snapshot).get(router).getRoutingPolicies().values()
+            : policies,
+        null);
+  }
 
-    Set<CommunityVar> allCommunities = findAllCommunities(communities, usedPolicies);
+  /**
+   * Compute atomic predicates for the given router's configuration.
+   *
+   * @param batfish the batfish object
+   * @param snapshot the current snapshot
+   * @param reference the reference snapshot - can be null if this is not called from a differential
+   *     question, such as SRP.
+   * @param router the name of the router whose configuration is being analyzed
+   * @param communities additional community regexes to track, from user-defined constraints
+   * @param asPathRegexes additional as-path regexes to track, from user-defined constraints
+   * @param policies the set of policies to create AtomicPredicates for
+   * @param referencePolicies the set of policies in the reference snapshot to create
+   *     AtomicPredicates for
+   */
+  public ConfigAtomicPredicates(
+      IBatfish batfish,
+      NetworkSnapshot snapshot,
+      @Nullable NetworkSnapshot reference,
+      String router,
+      @Nullable Set<CommunityVar> communities,
+      @Nullable Set<String> asPathRegexes,
+      @Nonnull Collection<RoutingPolicy> policies,
+      @Nullable Collection<RoutingPolicy> referencePolicies) {
+    Configuration configuration = batfish.loadConfigurations(snapshot).get(router);
+    Configuration referenceConfiguration = null;
+    if (reference != null) {
+      referenceConfiguration = batfish.loadConfigurations(reference).get(router);
+    }
+
+    // Gather the communities from both (if differential) configs + any user provided communities.
+    Set<CommunityVar> allCommunities = findAllCommunities(communities, policies, configuration);
+
+    if (reference != null) {
+      allCommunities.addAll(
+          findAllCommunities(Collections.emptySet(), referencePolicies, referenceConfiguration));
+    }
 
     // currently we only support regex matching for standard communities
     Predicate<CommunityVar> isStandardCommunity =
@@ -117,17 +182,47 @@ public class ConfigAtomicPredicates {
     for (int i = 0; i < nonStandardCommunityVars.length; i++) {
       _nonStandardCommunityLiterals.put(i + numAPs, nonStandardCommunityVars[i]);
     }
-    _asPathRegexAtomicPredicates =
-        new AsPathRegexAtomicPredicates(findAllAsPathRegexes(asPathRegexes, usedPolicies));
+
+    // Collect as path regexes from both (if differential) configs
+    Set<String> asPaths = firstNonNull(asPathRegexes, ImmutableSet.of());
+    Set<SymbolicAsPathRegex> asPathAps =
+        new HashSet<>(
+            findAllAsPathRegexes(
+                asPaths.stream()
+                    .map(SymbolicAsPathRegex::new)
+                    .collect(ImmutableSet.toImmutableSet()),
+                policies,
+                configuration));
+    if (reference != null) {
+      asPathAps.addAll(
+          findAllAsPathRegexes(Collections.emptySet(), referencePolicies, referenceConfiguration));
+    }
+    _asPathRegexAtomicPredicates = new AsPathRegexAtomicPredicates(ImmutableSet.copyOf(asPathAps));
+
+    // Collect several other items from both (if differential) configs
+    Set<String> nextHopInterfaces =
+        new HashSet<>(findAllNextHopInterfaces(policies, configuration));
+    Set<String> tracks = new HashSet<>(findAllTracks(policies, configuration));
+    Set<String> sourceVRFs = new HashSet<>(findAllSourceVrfs(policies, configuration));
+    if (reference != null) {
+      nextHopInterfaces.addAll(findAllNextHopInterfaces(referencePolicies, referenceConfiguration));
+      tracks.addAll(findAllTracks(referencePolicies, referenceConfiguration));
+      sourceVRFs.addAll(findAllSourceVrfs(referencePolicies, referenceConfiguration));
+    }
+    _nextHopInterfaces = ImmutableList.copyOf(nextHopInterfaces);
+    _tracks = ImmutableList.copyOf(tracks);
+    _sourceVrfs = ImmutableList.copyOf(sourceVRFs);
   }
 
   public ConfigAtomicPredicates(ConfigAtomicPredicates other) {
-    _configuration = other._configuration;
     _standardCommunityAtomicPredicates =
         new RegexAtomicPredicates<>(other._standardCommunityAtomicPredicates);
     _nonStandardCommunityLiterals = new HashMap<>(other._nonStandardCommunityLiterals);
     _asPathRegexAtomicPredicates =
         new AsPathRegexAtomicPredicates(other._asPathRegexAtomicPredicates);
+    _nextHopInterfaces = other._nextHopInterfaces;
+    _tracks = other._tracks;
+    _sourceVrfs = other._sourceVrfs;
   }
 
   /**
@@ -135,9 +230,11 @@ public class ConfigAtomicPredicates {
    * set of additional community literals and regexes is also included, which is used to support
    * user-specified community constraints for symbolic analysis.
    */
-  private Set<CommunityVar> findAllCommunities(
-      @Nullable Set<CommunityVar> communities, Collection<RoutingPolicy> policies) {
-    Set<CommunityVar> allCommunities = findAllCommunities(policies);
+  private static Set<CommunityVar> findAllCommunities(
+      @Nullable Set<CommunityVar> communities,
+      Collection<RoutingPolicy> policies,
+      Configuration configuration) {
+    Set<CommunityVar> allCommunities = findAllCommunities(policies, configuration);
     if (communities != null) {
       allCommunities.addAll(communities);
     }
@@ -148,9 +245,11 @@ public class ConfigAtomicPredicates {
    * Collect all community vars that appear in the given policy
    *
    * @param policy the policy to collect community vars from
+   * @param configuration the configuration based on a given snapshot
    * @return a set of community vars
    */
-  private Set<CommunityVar> findAllCommunities(RoutingPolicy policy) {
+  private static Set<CommunityVar> findAllCommunities(
+      RoutingPolicy policy, Configuration configuration) {
     Set<CommunityVar> comms = new HashSet<>();
     List<Statement> stmts = policy.getStatements();
     stmts.forEach(
@@ -159,7 +258,7 @@ public class ConfigAtomicPredicates {
                 stmt.accept(
                     new RoutePolicyStatementVarCollector(),
                     new Tuple<>(
-                        new HashSet<>(Collections.singleton(policy.getName())), _configuration))));
+                        new HashSet<>(Collections.singleton(policy.getName())), configuration))));
     return comms;
   }
 
@@ -167,13 +266,56 @@ public class ConfigAtomicPredicates {
    * Finds all community literals and regexes in the given routing policies by walking over them
    *
    * @param policies the routing policies to retrieve the community literals/regexes from.
+   * @param configuration the configuration based on a given snapshot
    */
-  private Set<CommunityVar> findAllCommunities(Collection<RoutingPolicy> policies) {
+  private static Set<CommunityVar> findAllCommunities(
+      Collection<RoutingPolicy> policies, Configuration configuration) {
     Set<CommunityVar> comms = new HashSet<>();
 
     // walk through every statement of every route policy
-    policies.forEach(pol -> comms.addAll(findAllCommunities(pol)));
+    policies.forEach(pol -> comms.addAll(findAllCommunities(pol, configuration)));
     return comms;
+  }
+
+  /**
+   * Identifies all items of a given kind in the match expressions of the given routing policies. A
+   * {@link BooleanExprVisitor} is provided that is specific to the particular items being searched
+   * for. An optional set of additional items is also included, which is used to support
+   * user-specified constraints for symbolic analysis.
+   */
+  private static <T> Set<T> findAllMatchItems(
+      Set<T> items,
+      Collection<RoutingPolicy> policies,
+      Configuration configuration,
+      BooleanExprVisitor<Set<T>, Tuple<Set<String>, Configuration>> booleanExprVisitor) {
+    ImmutableSet.Builder<T> builder = ImmutableSet.builder();
+
+    policies.forEach(
+        pol -> builder.addAll(findAllMatchItems(pol, configuration, booleanExprVisitor)));
+    builder.addAll(items.stream().collect(ImmutableSet.toImmutableSet()));
+    return builder.build();
+  }
+
+  /**
+   * Identifies all items of a given kind in the match expressions of the given routing policy. A
+   * {@link BooleanExprVisitor} is provided that is specific to the particular items being searched
+   * for. An optional set of additional items is also included, which is used to support
+   * user-specified constraints for symbolic analysis.
+   */
+  private static <T> Set<T> findAllMatchItems(
+      RoutingPolicy policy,
+      Configuration configuration,
+      BooleanExprVisitor<Set<T>, Tuple<Set<String>, Configuration>> booleanExprVisitor) {
+    Set<T> items = new HashSet<>();
+    List<Statement> stmts = policy.getStatements();
+    stmts.forEach(
+        stmt ->
+            items.addAll(
+                stmt.accept(
+                    new RoutePolicyStatementMatchCollector<>(booleanExprVisitor),
+                    new Tuple<>(
+                        new HashSet<>(Collections.singleton(policy.getName())), configuration))));
+    return items;
   }
 
   /**
@@ -181,56 +323,51 @@ public class ConfigAtomicPredicates {
    * additional AS-path regexes is also included, which is used to support user-specified AS-path
    * constraints for symbolic analysis.
    */
-  private Set<SymbolicAsPathRegex> findAllAsPathRegexes(
-      @Nullable Set<String> asPathRegexes, Collection<RoutingPolicy> policies) {
-    ImmutableSet.Builder<SymbolicAsPathRegex> builder = ImmutableSet.builder();
-
-    builder.addAll(findAsPathRegexes(policies));
-    if (asPathRegexes != null) {
-      builder.addAll(
-          asPathRegexes.stream()
-              .map(SymbolicAsPathRegex::new)
-              .collect(ImmutableSet.toImmutableSet()));
-    }
-    return builder.build();
+  private static Set<SymbolicAsPathRegex> findAllAsPathRegexes(
+      Set<SymbolicAsPathRegex> asPathRegexes,
+      Collection<RoutingPolicy> policies,
+      Configuration configuration) {
+    return findAllMatchItems(
+        asPathRegexes, policies, configuration, new BooleanExprAsPathCollector());
   }
 
   /**
-   * Collect all AS-path regexes that appear in the given policy
+   * Collect up all next-hop interface names that appear in the given policies.
    *
-   * @param policy the policy to collect AS-path regexes from
-   * @return a set of symbolic AS path regexes.
+   * @param policies the set of policies to collect interface names from.
+   * @param configuration the batfish configuration
+   * @return a set of all next-hop interface names that appear
    */
-  private Set<SymbolicAsPathRegex> findAsPathRegexes(RoutingPolicy policy) {
-    Set<SymbolicAsPathRegex> asPathRegexes = new HashSet<>();
-    List<Statement> stmts = policy.getStatements();
-    stmts.forEach(
-        stmt ->
-            asPathRegexes.addAll(
-                stmt.accept(
-                    new RoutePolicyStatementAsPathCollector(),
-                    new Tuple<>(
-                        new HashSet<>(Collections.singleton(policy.getName())), _configuration))));
-    return asPathRegexes;
+  private static Set<String> findAllNextHopInterfaces(
+      Collection<RoutingPolicy> policies, Configuration configuration) {
+    return findAllMatchItems(
+        ImmutableSet.of(), policies, configuration, new NextHopInterfaceCollector());
   }
 
   /**
-   * Collect up all AS-path regexes that appear in the given policies.
+   * Collect up all tracks that appear in the given policies.
    *
-   * @param policies the set of policies to collect AS-path regexes from.
-   * @return a set of all AS-path regexes that appear
+   * @param policies the set of policies to collect tracks from.
+   * @param configuration the batfish configuration
+   * @return a set of all tracks that appear
    */
-  private Set<SymbolicAsPathRegex> findAsPathRegexes(Collection<RoutingPolicy> policies) {
-    Set<SymbolicAsPathRegex> asPathRegexes = new HashSet<>();
-
-    // walk through every statement of every route policy
-    policies.forEach(pol -> asPathRegexes.addAll(findAsPathRegexes(pol)));
-
-    return asPathRegexes;
+  private static Set<String> findAllTracks(
+      Collection<RoutingPolicy> policies, Configuration configuration) {
+    return findAllMatchItems(
+        ImmutableSet.of(), policies, configuration, new BooleanExprTrackCollector());
   }
 
-  public Configuration getConfiguration() {
-    return _configuration;
+  /**
+   * Collect up all source VRFs that appear in the given policies.
+   *
+   * @param policies the set of policies to collect source VRFs from.
+   * @param configuration the batfish configuration
+   * @return a set of all source VRFs that appear
+   */
+  private static Set<String> findAllSourceVrfs(
+      Collection<RoutingPolicy> policies, Configuration configuration) {
+    return findAllMatchItems(
+        ImmutableSet.of(), policies, configuration, new BooleanExprSourceVrfCollector());
   }
 
   public RegexAtomicPredicates<CommunityVar> getStandardCommunityAtomicPredicates() {
@@ -243,5 +380,17 @@ public class ConfigAtomicPredicates {
 
   public AsPathRegexAtomicPredicates getAsPathRegexAtomicPredicates() {
     return _asPathRegexAtomicPredicates;
+  }
+
+  public ImmutableList<String> getNextHopInterfaces() {
+    return _nextHopInterfaces;
+  }
+
+  public ImmutableList<String> getTracks() {
+    return _tracks;
+  }
+
+  public ImmutableList<String> getSourceVrfs() {
+    return _sourceVrfs;
   }
 }

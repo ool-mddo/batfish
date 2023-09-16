@@ -7,7 +7,9 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 import org.batfish.datamodel.BgpTieBreaker;
 import org.batfish.datamodel.Ip;
 import org.batfish.datamodel.Ip6;
@@ -32,6 +34,8 @@ public class BgpProcess implements Serializable {
   private boolean _asPathMultipathRelax;
 
   private Ip _clusterId;
+  private @Nullable Long _confederation;
+  private final @Nonnull Set<Long> _confederationMembers;
 
   private boolean _defaultIpv4Activate;
 
@@ -40,6 +44,8 @@ public class BgpProcess implements Serializable {
   private Map<Prefix, DynamicIpBgpPeerGroup> _dynamicIpPeerGroups;
 
   private Map<Prefix6, DynamicIpv6BgpPeerGroup> _dynamicIpv6PeerGroups;
+
+  private @Nullable Boolean _enforceFirstAs;
 
   private Map<Prefix, BgpNetwork> _ipNetworks;
 
@@ -76,6 +82,7 @@ public class BgpProcess implements Serializable {
     _aggregateNetworks = new HashMap<>();
     _aggregateIpv6Networks = new HashMap<>();
     _allPeerGroups = new HashSet<>();
+    _confederationMembers = new TreeSet<>();
     _defaultIpv4Activate = true;
     _dynamicIpPeerGroups = new HashMap<>();
     _dynamicIpv6PeerGroups = new HashMap<>();
@@ -174,6 +181,18 @@ public class BgpProcess implements Serializable {
     return _clusterId;
   }
 
+  public @Nullable Long getConfederation() {
+    return _confederation;
+  }
+
+  public void setConfederation(@Nullable Long confederation) {
+    _confederation = confederation;
+  }
+
+  public @Nonnull Set<Long> getConfederationMembers() {
+    return _confederationMembers;
+  }
+
   public int getDefaultMetric() {
     return _masterBgpPeerGroup.getDefaultMetric();
   }
@@ -184,6 +203,15 @@ public class BgpProcess implements Serializable {
 
   public Map<Prefix6, DynamicIpv6BgpPeerGroup> getDynamicIpv6PeerGroups() {
     return _dynamicIpv6PeerGroups;
+  }
+
+  @Nullable
+  public Boolean getEnforceFirstAs() {
+    return _enforceFirstAs;
+  }
+
+  public void setEnforceFirstAs(@Nullable Boolean enforceFirstAs) {
+    _enforceFirstAs = enforceFirstAs;
   }
 
   public Map<Prefix, BgpNetwork> getIpNetworks() {

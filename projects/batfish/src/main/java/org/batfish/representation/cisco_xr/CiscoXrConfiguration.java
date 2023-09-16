@@ -125,6 +125,7 @@ import org.batfish.datamodel.SwitchportEncapsulationType;
 import org.batfish.datamodel.SwitchportMode;
 import org.batfish.datamodel.TunnelConfiguration;
 import org.batfish.datamodel.bgp.AddressFamilyCapabilities;
+import org.batfish.datamodel.bgp.BgpConfederation;
 import org.batfish.datamodel.bgp.Ipv4UnicastAddressFamily;
 import org.batfish.datamodel.eigrp.ClassicMetric;
 import org.batfish.datamodel.eigrp.EigrpInterfaceSettings;
@@ -804,6 +805,13 @@ public final class CiscoXrConfiguration extends VendorConfiguration {
 
     int defaultMetric = proc.getDefaultMetric();
 
+    // Global confederation config
+    Long confederation = proc.getConfederation();
+    if (confederation != null && !proc.getConfederationMembers().isEmpty()) {
+      newBgpProcess.setConfederation(
+          new BgpConfederation(confederation, proc.getConfederationMembers()));
+    }
+
     // Populate process-level BGP aggregates
     proc.getAggregateNetworks().values().stream()
         .map(ipv4Aggregate -> toBgpAggregate(ipv4Aggregate, c, _w))
@@ -1035,6 +1043,8 @@ public final class CiscoXrConfiguration extends VendorConfiguration {
         throw new VendorConversionException("Invalid BGP leaf neighbor type");
       }
       newNeighborBuilder.setBgpProcess(newBgpProcess);
+      newNeighborBuilder.setConfederation(proc.getConfederation());
+      newNeighborBuilder.setEnforceFirstAs(firstNonNull(proc.getEnforceFirstAs(), Boolean.TRUE));
 
       AddressFamilyCapabilities ipv4AfSettings =
           AddressFamilyCapabilities.builder()

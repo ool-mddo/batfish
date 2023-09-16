@@ -2412,6 +2412,8 @@ IDENT: 'ident';
 
 IDENTITY: 'identity';
 
+IDENTIFIER: 'identifier';
+
 IDLE: 'idle';
 
 IDLE_TIMEOUT: 'idle-timeout';
@@ -3942,6 +3944,8 @@ PEER_POLICY: 'peer-policy';
 PEER_SESSION: 'peer-session';
 
 PEER_SWITCH: 'peer-switch';
+
+PEERS: 'peers';
 
 PERCENT_LITERAL: 'percent';
 

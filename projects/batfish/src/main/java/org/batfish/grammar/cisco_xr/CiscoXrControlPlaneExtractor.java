@@ -400,7 +400,8 @@ import org.batfish.grammar.cisco_xr.CiscoXrParser.Auto_summary_bgp_tailContext;
 import org.batfish.grammar.cisco_xr.CiscoXrParser.Bgp_address_familyContext;
 import org.batfish.grammar.cisco_xr.CiscoXrParser.Bgp_advertise_inactive_rb_stanzaContext;
 import org.batfish.grammar.cisco_xr.CiscoXrParser.Bgp_asnContext;
-import org.batfish.grammar.cisco_xr.CiscoXrParser.Bgp_confederation_rb_stanzaContext;
+import org.batfish.grammar.cisco_xr.CiscoXrParser.Bgp_conf_identifier_rb_stanzaContext;
+import org.batfish.grammar.cisco_xr.CiscoXrParser.Bgp_conf_peers_rb_stanzaContext;
 import org.batfish.grammar.cisco_xr.CiscoXrParser.Bgp_listen_range_rb_stanzaContext;
 import org.batfish.grammar.cisco_xr.CiscoXrParser.Bgp_redistribute_internal_rb_stanzaContext;
 import org.batfish.grammar.cisco_xr.CiscoXrParser.Bgp_vrf_address_familyContext;
@@ -1630,8 +1631,19 @@ public class CiscoXrControlPlaneExtractor extends CiscoXrParserBaseListener
   }
 
   @Override
-  public void enterBgp_confederation_rb_stanza(Bgp_confederation_rb_stanzaContext ctx) {
-    todo(ctx);
+  public void exitBgp_conf_identifier_rb_stanza(Bgp_conf_identifier_rb_stanzaContext ctx) {
+    BgpProcess proc = currentVrf().getBgpProcess();
+    long asn = toAsNum(ctx.id);
+    proc.setConfederation(asn);
+  }
+
+  @Override
+  public void exitBgp_conf_peers_rb_stanza(Bgp_conf_peers_rb_stanzaContext ctx) {
+    BgpProcess proc = currentVrf().getBgpProcess();
+    Set<Long> members = proc.getConfederationMembers();
+    for (Bgp_asnContext peer : ctx.peers) {
+      members.add(toAsNum(peer));
+    }
   }
 
   @Override
